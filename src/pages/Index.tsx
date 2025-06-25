@@ -28,25 +28,37 @@ const Index = () => {
 
       // Handle day-of-week conversion (Unix: 0=Sunday, EventBridge: 1=Sunday, 7=Sunday)
       if (dayOfWeek !== "*") {
-        // Convert individual numbers, ranges, and lists
-        dayOfWeek = dayOfWeek.replace(/\b0\b/g, "7"); // Sunday: 0 -> 7
-        
-        // Handle ranges like 1-5 (Mon-Fri in Unix becomes 2-6 in EventBridge)
-        dayOfWeek = dayOfWeek.replace(/(\d)-(\d)/g, (match, start, end) => {
-          const startNum = parseInt(start);
-          const endNum = parseInt(end);
+        // Handle named days (MON, TUE, etc.) - EventBridge supports these
+        if (!/^\d/.test(dayOfWeek) && dayOfWeek.includes("MON")) {
+          // Keep named days as-is for EventBridge
+          dayOfWeek = dayOfWeek.replace(/SUN/g, "1")
+                               .replace(/MON/g, "2")
+                               .replace(/TUE/g, "3")
+                               .replace(/WED/g, "4")
+                               .replace(/THU/g, "5")
+                               .replace(/FRI/g, "6")
+                               .replace(/SAT/g, "7");
+        } else {
+          // Convert individual numbers, ranges, and lists
+          dayOfWeek = dayOfWeek.replace(/\b0\b/g, "1"); // Sunday: 0 -> 1
           
-          // Convert range bounds
-          const newStart = startNum === 0 ? 7 : (startNum >= 1 && startNum <= 6 ? startNum + 1 : startNum);
-          const newEnd = endNum === 0 ? 7 : (endNum >= 1 && endNum <= 6 ? endNum + 1 : endNum);
+          // Handle ranges like 1-5 (Mon-Fri in Unix becomes 2-6 in EventBridge)
+          dayOfWeek = dayOfWeek.replace(/(\d)-(\d)/g, (match, start, end) => {
+            const startNum = parseInt(start);
+            const endNum = parseInt(end);
+            
+            // Convert range bounds (Unix 1-6 becomes EventBridge 2-7)
+            const newStart = startNum === 0 ? 1 : startNum + 1;
+            const newEnd = endNum === 0 ? 1 : endNum + 1;
+            
+            return `${newStart}-${newEnd}`;
+          });
           
-          return `${newStart}-${newEnd}`;
-        });
-        
-        // Handle comma-separated lists like 1,3,5 (convert each number)
-        dayOfWeek = dayOfWeek.replace(/\b([1-6])\b/g, (match, num) => {
-          return String(parseInt(num) + 1);
-        });
+          // Handle comma-separated lists like 1,3,5 (convert each number)
+          dayOfWeek = dayOfWeek.replace(/\b([1-6])\b/g, (match, num) => {
+            return String(parseInt(num) + 1);
+          });
+        }
       }
 
       // Handle mutual exclusivity of day-of-month and day-of-week in EventBridge
@@ -57,6 +69,9 @@ const Index = () => {
       } else if (dayOfMonth === "*" && dayOfWeek === "*") {
         // If both are wildcards, keep day-of-month as "*" and set day-of-week to "?"
         dayOfWeek = "?";
+      } else if (dayOfMonth === "*" && dayOfWeek !== "*") {
+        // If day-of-month is wildcard and day-of-week is specific, set day-of-month to "?"
+        dayOfMonth = "?";
       }
 
       // EventBridge format: minute hour day-of-month month day-of-week year
@@ -97,7 +112,10 @@ const Index = () => {
     // Allow wildcards
     if (field === "*") return true;
     
-    // Allow step values like */5
+    // Allow named days
+    if (field.match(/^(SUN|MON|TUE|WED|THU|FRI|SAT)(-|,)*(SUN|MON|TUE|WED|THU|FRI|SAT)*$/)) return true;
+    
+    // Allow step values like */5 or 0/15
     if (field.includes("/")) {
       const [range, step] = field.split("/");
       if (range === "*") return !isNaN(parseInt(step)) && parseInt(step) > 0;
@@ -108,7 +126,9 @@ const Index = () => {
         return !isNaN(start) && !isNaN(end) && start >= min && end <= max && start <= end;
       }
       
-      return !isNaN(parseInt(range)) && parseInt(range) >= min && parseInt(range) <= max;
+      // Handle single number with step like 0/15
+      const rangeNum = parseInt(range);
+      return !isNaN(rangeNum) && rangeNum >= min && rangeNum <= max;
     }
     
     // Allow ranges like 1-5
@@ -170,44 +190,54 @@ const Index = () => {
 
   const examples = [
     { 
+      unix: "15 12 * * *", 
+      description: "Run at 12:15 PM every day", 
+      eventbridge: "15 12 * * ? *" 
+    },
+    { 
+      unix: "0 18 * * 1-5", 
+      description: "Run at 6:00 PM Monday through Friday", 
+      eventbridge: "0 18 ? * 2-6 *" 
+    },
+    { 
+      unix: "0 8 1 * *", 
+      description: "Run at 8:00 AM on 1st day of month", 
+      eventbridge: "0 8 1 * ? *" 
+    },
+    { 
+      unix: "0/15 * * * *", 
+      description: "Run every 15 minutes", 
+      eventbridge: "0/15 * * * ? *" 
+    },
+    { 
+      unix: "0/10 * * * 1-5", 
+      description: "Run every 10 minutes Monday through Friday", 
+      eventbridge: "0/10 * ? * 2-6 *" 
+    },
+    { 
+      unix: "0/5 8-17 * * 1-5", 
+      description: "Run every 5 minutes, 8 AM to 5:55 PM, Monday-Friday", 
+      eventbridge: "0/5 8-17 ? * 2-6 *" 
+    },
+    { 
+      unix: "0/30 20-2 * * 1-5", 
+      description: "Run every 30 minutes, 8 PM to 2:30 AM, Monday-Friday", 
+      eventbridge: "0/30 20-2 ? * 2-6 *" 
+    },
+    { 
       unix: "0 9 * * 1", 
       description: "Every Monday at 9:00 AM", 
-      eventbridge: "0 9 * * 2 *" 
-    },
-    { 
-      unix: "*/15 * * * *", 
-      description: "Every 15 minutes", 
-      eventbridge: "*/15 * * * ? *" 
-    },
-    { 
-      unix: "0 0 1 * *", 
-      description: "First day of every month at midnight", 
-      eventbridge: "0 0 1 * ? *" 
+      eventbridge: "0 9 ? * 2 *" 
     },
     { 
       unix: "30 14 * * 0", 
       description: "Every Sunday at 2:30 PM", 
-      eventbridge: "30 14 * * 7 *" 
-    },
-    { 
-      unix: "0 10 * * 1-5", 
-      description: "Weekdays at 10:00 AM", 
-      eventbridge: "0 10 * * 2-6 *" 
-    },
-    { 
-      unix: "0 0 */2 * *", 
-      description: "Every 2 days at midnight", 
-      eventbridge: "0 0 */2 * ? *" 
-    },
-    { 
-      unix: "15 2 1 */3 *", 
-      description: "First day of every 3rd month at 2:15 AM", 
-      eventbridge: "15 2 1 */3 ? *" 
+      eventbridge: "30 14 ? * 1 *" 
     },
     { 
       unix: "0 8 * * 1,3,5", 
       description: "Monday, Wednesday, Friday at 8:00 AM", 
-      eventbridge: "0 8 * * 2,4,6 *" 
+      eventbridge: "0 8 ? * 2,4,6 *" 
     }
   ];
 
@@ -354,7 +384,7 @@ const Index = () => {
                 <h3 className="text-lg font-semibold text-pink-300">EventBridge Cron</h3>
                 <ul className="space-y-2 text-slate-300">
                   <li>• 6 fields: minute hour day-of-month month day-of-week year</li>
-                  <li>• Sunday = 7, Monday = 1, ..., Saturday = 6</li>
+                  <li>• Sunday = 1, Monday = 2, ..., Saturday = 7</li>
                   <li>• Year field required (use * for any year)</li>
                   <li>• Always runs in UTC timezone</li>
                   <li>• Uses '?' for "no specific value" in day fields</li>
@@ -366,7 +396,7 @@ const Index = () => {
               <h4 className="text-md font-semibold text-yellow-300 mb-2">Important Notes</h4>
               <ul className="space-y-1 text-slate-300 text-sm">
                 <li>• EventBridge requires '?' in either day-of-month OR day-of-week when the other is specified</li>
-                <li>• Day-of-week conversion: Unix 0→7, 1→2, 2→3, 3→4, 4→5, 5→6, 6→7</li>
+                <li>• Day-of-week conversion: Unix 0→1, 1→2, 2→3, 3→4, 4→5, 5→6, 6→7</li>
                 <li>• EventBridge schedules are always in UTC - adjust your times accordingly</li>
                 <li>• The converter automatically handles mutual exclusivity rules</li>
               </ul>
