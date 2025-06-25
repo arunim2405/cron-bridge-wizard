@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -26,38 +27,49 @@ const Index = () => {
 
       let [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
 
-      // Handle day-of-week conversion (Unix: 0=Sunday, EventBridge: 1=Sunday, 7=Sunday)
+      // Handle day-of-week conversion (Unix: 0=Sunday, EventBridge: 1=Sunday)
       if (dayOfWeek !== "*") {
-        // Handle named days (MON, TUE, etc.) - EventBridge supports these
-        if (!/^\d/.test(dayOfWeek) && dayOfWeek.includes("MON")) {
-          // Keep named days as-is for EventBridge
-          dayOfWeek = dayOfWeek.replace(/SUN/g, "1")
-                               .replace(/MON/g, "2")
-                               .replace(/TUE/g, "3")
-                               .replace(/WED/g, "4")
-                               .replace(/THU/g, "5")
-                               .replace(/FRI/g, "6")
-                               .replace(/SAT/g, "7");
-        } else {
-          // Convert individual numbers, ranges, and lists
-          dayOfWeek = dayOfWeek.replace(/\b0\b/g, "1"); // Sunday: 0 -> 1
+        // Handle named days first (SUN, MON, etc.)
+        dayOfWeek = dayOfWeek.replace(/SUN/gi, "1")
+                             .replace(/MON/gi, "2")
+                             .replace(/TUE/gi, "3")
+                             .replace(/WED/gi, "4")
+                             .replace(/THU/gi, "5")
+                             .replace(/FRI/gi, "6")
+                             .replace(/SAT/gi, "7");
+        
+        // Handle ranges like 1-5 (Mon-Fri in Unix becomes 2-6 in EventBridge)
+        dayOfWeek = dayOfWeek.replace(/(\d)-(\d)/g, (match, start, end) => {
+          const startNum = parseInt(start);
+          const endNum = parseInt(end);
           
-          // Handle ranges like 1-5 (Mon-Fri in Unix becomes 2-6 in EventBridge)
-          dayOfWeek = dayOfWeek.replace(/(\d)-(\d)/g, (match, start, end) => {
-            const startNum = parseInt(start);
-            const endNum = parseInt(end);
-            
-            // Convert range bounds (Unix 1-6 becomes EventBridge 2-7)
-            const newStart = startNum === 0 ? 1 : startNum + 1;
-            const newEnd = endNum === 0 ? 1 : endNum + 1;
-            
-            return `${newStart}-${newEnd}`;
-          });
+          // Convert 0 (Sunday) to 1, and shift 1-6 to 2-7
+          const newStart = startNum === 0 ? 1 : startNum + 1;
+          const newEnd = endNum === 0 ? 1 : endNum + 1;
           
-          // Handle comma-separated lists like 1,3,5 (convert each number)
-          dayOfWeek = dayOfWeek.replace(/\b([1-6])\b/g, (match, num) => {
-            return String(parseInt(num) + 1);
-          });
+          return `${newStart}-${newEnd}`;
+        });
+        
+        // Handle comma-separated lists like 1,3,5
+        dayOfWeek = dayOfWeek.replace(/\b(\d)\b/g, (match, num) => {
+          const numVal = parseInt(num);
+          if (numVal === 0) return "1"; // Sunday: 0 -> 1
+          if (numVal >= 1 && numVal <= 6) return String(numVal + 1); // 1-6 -> 2-7
+          return match; // Keep 7 as is (Sunday can be 7 in Unix too)
+        });
+
+        // Handle step values like */2 or 1/2
+        if (dayOfWeek.includes("/")) {
+          const [range, step] = dayOfWeek.split("/");
+          if (range === "*") {
+            dayOfWeek = `*/${step}`;
+          } else if (range.includes("-")) {
+            // Already handled above in range conversion
+          } else if (!isNaN(parseInt(range))) {
+            const baseNum = parseInt(range);
+            const convertedBase = baseNum === 0 ? 1 : (baseNum >= 1 && baseNum <= 6 ? baseNum + 1 : baseNum);
+            dayOfWeek = `${convertedBase}/${step}`;
+          }
         }
       }
 
@@ -87,38 +99,55 @@ const Index = () => {
     const parts = cronExpression.trim().split(/\s+/);
     if (parts.length !== 5) return false;
     
-    // Enhanced validation for each field
     const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
     
-    // Minute: 0-59
-    if (!isValidCronField(minute, 0, 59)) return false;
-    
-    // Hour: 0-23
-    if (!isValidCronField(hour, 0, 23)) return false;
-    
-    // Day of month: 1-31
-    if (!isValidCronField(dayOfMonth, 1, 31)) return false;
-    
-    // Month: 1-12
-    if (!isValidCronField(month, 1, 12)) return false;
-    
-    // Day of week: 0-7 (0 and 7 are Sunday)
-    if (!isValidCronField(dayOfWeek, 0, 7)) return false;
+    // Validate each field
+    if (!isValidCronField(minute, 0, 59, "minute")) return false;
+    if (!isValidCronField(hour, 0, 23, "hour")) return false;
+    if (!isValidCronField(dayOfMonth, 1, 31, "dayOfMonth")) return false;
+    if (!isValidCronField(month, 1, 12, "month")) return false;
+    if (!isValidCronField(dayOfWeek, 0, 7, "dayOfWeek")) return false;
     
     return true;
   };
 
-  const isValidCronField = (field: string, min: number, max: number): boolean => {
+  const isValidCronField = (field: string, min: number, max: number, fieldType: string): boolean => {
     // Allow wildcards
     if (field === "*") return true;
     
-    // Allow named days
-    if (field.match(/^(SUN|MON|TUE|WED|THU|FRI|SAT)(-|,)*(SUN|MON|TUE|WED|THU|FRI|SAT)*$/)) return true;
+    // Handle EventBridge-specific wildcards (note: these are not valid in Unix cron but we'll document the limitation)
+    if (fieldType === "dayOfMonth") {
+      // L wildcard (last day of month) - not valid in Unix cron
+      if (field === "L") return false; // Unix doesn't support L
+      // W wildcard (weekday) - not valid in Unix cron  
+      if (field.includes("W")) return false; // Unix doesn't support W
+    }
+    
+    if (fieldType === "dayOfWeek") {
+      // # wildcard (nth occurrence) - not valid in Unix cron
+      if (field.includes("#")) return false; // Unix doesn't support #
+      // L wildcard (last occurrence) - not valid in Unix cron
+      if (field.includes("L")) return false; // Unix doesn't support L
+    }
+    
+    // Allow named days for day-of-week
+    if (fieldType === "dayOfWeek" && field.match(/^(SUN|MON|TUE|WED|THU|FRI|SAT)(-|,|\/)*[A-Z0-9,\-\/]*$/i)) {
+      return true;
+    }
+    
+    // Allow named months for month field
+    if (fieldType === "month" && field.match(/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(-|,|\/)*[A-Z0-9,\-\/]*$/i)) {
+      return true;
+    }
     
     // Allow step values like */5 or 0/15
     if (field.includes("/")) {
       const [range, step] = field.split("/");
-      if (range === "*") return !isNaN(parseInt(step)) && parseInt(step) > 0;
+      const stepNum = parseInt(step);
+      
+      if (isNaN(stepNum) || stepNum <= 0) return false;
+      
+      if (range === "*") return true;
       
       // Handle ranges with steps like 1-10/2
       if (range.includes("-")) {
@@ -139,8 +168,11 @@ const Index = () => {
     
     // Allow comma-separated lists like 1,3,5
     if (field.includes(",")) {
-      const values = field.split(",").map(n => parseInt(n.trim()));
-      return values.every(val => !isNaN(val) && val >= min && val <= max);
+      const values = field.split(",").map(v => v.trim());
+      return values.every(val => {
+        const num = parseInt(val);
+        return !isNaN(num) && num >= min && num <= max;
+      });
     }
     
     // Single number
@@ -158,7 +190,7 @@ const Index = () => {
 
     try {
       if (!validateCronExpression(unixCron)) {
-        throw new Error("Invalid cron expression format. Please check field values and ranges.");
+        throw new Error("Invalid Unix cron expression. Check field values, ranges, and note that L, W, and # wildcards are not supported in Unix cron.");
       }
       
       const converted = convertCronToEventBridge(unixCron);
@@ -220,16 +252,6 @@ const Index = () => {
       eventbridge: "0/5 8-17 ? * 2-6 *" 
     },
     { 
-      unix: "0/30 20-2 * * 1-5", 
-      description: "Run every 30 minutes, 8 PM to 2:30 AM, Monday-Friday", 
-      eventbridge: "0/30 20-2 ? * 2-6 *" 
-    },
-    { 
-      unix: "0 9 * * 1", 
-      description: "Every Monday at 9:00 AM", 
-      eventbridge: "0 9 ? * 2 *" 
-    },
-    { 
       unix: "30 14 * * 0", 
       description: "Every Sunday at 2:30 PM", 
       eventbridge: "30 14 ? * 1 *" 
@@ -238,6 +260,16 @@ const Index = () => {
       unix: "0 8 * * 1,3,5", 
       description: "Monday, Wednesday, Friday at 8:00 AM", 
       eventbridge: "0 8 ? * 2,4,6 *" 
+    },
+    { 
+      unix: "0 12 * JAN,JUN,DEC *", 
+      description: "Noon on every day in January, June, and December", 
+      eventbridge: "0 12 * JAN,JUN,DEC ? *" 
+    },
+    { 
+      unix: "0 9 1-7 * 1", 
+      description: "9 AM on first Monday of every month", 
+      eventbridge: "0 9 ? * 2 *" 
     }
   ];
 
@@ -363,6 +395,62 @@ const Index = () => {
           </CardContent>
         </Card>
 
+        {/* Wildcards Reference */}
+        <Card className="bg-slate-800/50 border-slate-700 backdrop-blur-sm">
+          <CardHeader>
+            <CardTitle className="text-white">AWS EventBridge Wildcards</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="space-y-3">
+                <h3 className="text-lg font-semibold text-purple-300">Common Wildcards</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">*</code>
+                    <span className="text-slate-300">All values in field</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">?</code>
+                    <span className="text-slate-300">Any value (day fields only)</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">,</code>
+                    <span className="text-slate-300">Multiple values (JAN,FEB,MAR)</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">-</code>
+                    <span className="text-slate-300">Range of values (1-15)</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">/</code>
+                    <span className="text-slate-300">Step values (*/10, 1/5)</span>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <h3 className="text-lg font-semibold text-pink-300">EventBridge Only</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">L</code>
+                    <span className="text-slate-300">Last day of month/week</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">W</code>
+                    <span className="text-slate-300">Closest weekday (3W)</span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <code className="bg-slate-700 px-2 py-1 rounded text-pink-300 font-mono">#</code>
+                    <span className="text-slate-300">Nth occurrence (3#2 = 2nd Tue)</span>
+                  </div>
+                </div>
+                <p className="text-xs text-yellow-300 mt-3">
+                  ⚠️ L, W, and # are not supported in Unix cron
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Key Differences */}
         <Card className="bg-slate-800/50 border-slate-700 backdrop-blur-sm">
           <CardHeader>
@@ -378,6 +466,7 @@ const Index = () => {
                   <li>• No year field</li>
                   <li>• Uses system's local timezone</li>
                   <li>• Allows '*' in all fields</li>
+                  <li>• No L, W, or # wildcards</li>
                 </ul>
               </div>
               <div className="space-y-3">
@@ -388,17 +477,20 @@ const Index = () => {
                   <li>• Year field required (use * for any year)</li>
                   <li>• Always runs in UTC timezone</li>
                   <li>• Uses '?' for "no specific value" in day fields</li>
+                  <li>• Supports L, W, and # wildcards</li>
                 </ul>
               </div>
             </div>
             
             <div className="mt-6 p-4 bg-slate-700/30 rounded-lg">
-              <h4 className="text-md font-semibold text-yellow-300 mb-2">Important Notes</h4>
+              <h4 className="text-md font-semibold text-yellow-300 mb-2">Important Limitations</h4>
               <ul className="space-y-1 text-slate-300 text-sm">
                 <li>• EventBridge requires '?' in either day-of-month OR day-of-week when the other is specified</li>
                 <li>• Day-of-week conversion: Unix 0→1, 1→2, 2→3, 3→4, 4→5, 5→6, 6→7</li>
                 <li>• EventBridge schedules are always in UTC - adjust your times accordingly</li>
-                <li>• The converter automatically handles mutual exclusivity rules</li>
+                <li>• You cannot use both day-of-month and day-of-week in the same expression</li>
+                <li>• Rates faster than 1 minute are not supported in EventBridge</li>
+                <li>• Using '#' allows only one expression in day-of-week field</li>
               </ul>
             </div>
           </CardContent>
