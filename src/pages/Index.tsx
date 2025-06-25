@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -22,21 +21,46 @@ const Index = () => {
       const parts = cronExpression.trim().split(/\s+/);
       
       if (parts.length !== 5) {
-        throw new Error("Unix cron must have exactly 5 fields: minute hour day month day-of-week");
+        throw new Error("Unix cron must have exactly 5 fields: minute hour day-of-month month day-of-week");
       }
 
-      const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+      let [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
 
-      // Convert day of week (Unix: 0=Sunday, EventBridge: 1=Sunday)
-      let convertedDayOfWeek = dayOfWeek;
-      if (dayOfWeek !== "*" && dayOfWeek !== "?") {
-        // Handle ranges and lists
-        convertedDayOfWeek = dayOfWeek.replace(/\b0\b/g, "7").replace(/\b([1-6])\b/g, (match, p1) => String(parseInt(p1) + 1));
+      // Handle day-of-week conversion (Unix: 0=Sunday, EventBridge: 1=Sunday, 7=Sunday)
+      if (dayOfWeek !== "*") {
+        // Convert individual numbers, ranges, and lists
+        dayOfWeek = dayOfWeek.replace(/\b0\b/g, "7"); // Sunday: 0 -> 7
+        
+        // Handle ranges like 1-5 (Mon-Fri in Unix becomes 2-6 in EventBridge)
+        dayOfWeek = dayOfWeek.replace(/(\d)-(\d)/g, (match, start, end) => {
+          const startNum = parseInt(start);
+          const endNum = parseInt(end);
+          
+          // Convert range bounds
+          const newStart = startNum === 0 ? 7 : (startNum >= 1 && startNum <= 6 ? startNum + 1 : startNum);
+          const newEnd = endNum === 0 ? 7 : (endNum >= 1 && endNum <= 6 ? endNum + 1 : endNum);
+          
+          return `${newStart}-${newEnd}`;
+        });
+        
+        // Handle comma-separated lists like 1,3,5 (convert each number)
+        dayOfWeek = dayOfWeek.replace(/\b([1-6])\b/g, (match, num) => {
+          return String(parseInt(num) + 1);
+        });
+      }
+
+      // Handle mutual exclusivity of day-of-month and day-of-week in EventBridge
+      if (dayOfMonth !== "*" && dayOfWeek !== "*") {
+        // If both are specified, EventBridge requires one to be "?"
+        // We'll prioritize day-of-month and set day-of-week to "?"
+        dayOfWeek = "?";
+      } else if (dayOfMonth === "*" && dayOfWeek === "*") {
+        // If both are wildcards, keep day-of-month as "*" and set day-of-week to "?"
+        dayOfWeek = "?";
       }
 
       // EventBridge format: minute hour day-of-month month day-of-week year
-      // Add wildcard for year as the 6th field
-      const eventBridgeExpression = `${minute} ${hour} ${dayOfMonth} ${month} ${convertedDayOfWeek} *`;
+      const eventBridgeExpression = `${minute} ${hour} ${dayOfMonth} ${month} ${dayOfWeek} *`;
       
       return eventBridgeExpression;
     } catch (err) {
@@ -48,9 +72,60 @@ const Index = () => {
     const parts = cronExpression.trim().split(/\s+/);
     if (parts.length !== 5) return false;
     
-    // Basic validation - each part should contain valid cron characters
-    const cronRegex = /^[\d\*\-\,\/\?]+$/;
-    return parts.every(part => cronRegex.test(part));
+    // Enhanced validation for each field
+    const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+    
+    // Minute: 0-59
+    if (!isValidCronField(minute, 0, 59)) return false;
+    
+    // Hour: 0-23
+    if (!isValidCronField(hour, 0, 23)) return false;
+    
+    // Day of month: 1-31
+    if (!isValidCronField(dayOfMonth, 1, 31)) return false;
+    
+    // Month: 1-12
+    if (!isValidCronField(month, 1, 12)) return false;
+    
+    // Day of week: 0-7 (0 and 7 are Sunday)
+    if (!isValidCronField(dayOfWeek, 0, 7)) return false;
+    
+    return true;
+  };
+
+  const isValidCronField = (field: string, min: number, max: number): boolean => {
+    // Allow wildcards
+    if (field === "*") return true;
+    
+    // Allow step values like */5
+    if (field.includes("/")) {
+      const [range, step] = field.split("/");
+      if (range === "*") return !isNaN(parseInt(step)) && parseInt(step) > 0;
+      
+      // Handle ranges with steps like 1-10/2
+      if (range.includes("-")) {
+        const [start, end] = range.split("-").map(n => parseInt(n));
+        return !isNaN(start) && !isNaN(end) && start >= min && end <= max && start <= end;
+      }
+      
+      return !isNaN(parseInt(range)) && parseInt(range) >= min && parseInt(range) <= max;
+    }
+    
+    // Allow ranges like 1-5
+    if (field.includes("-")) {
+      const [start, end] = field.split("-").map(n => parseInt(n));
+      return !isNaN(start) && !isNaN(end) && start >= min && end <= max && start <= end;
+    }
+    
+    // Allow comma-separated lists like 1,3,5
+    if (field.includes(",")) {
+      const values = field.split(",").map(n => parseInt(n.trim()));
+      return values.every(val => !isNaN(val) && val >= min && val <= max);
+    }
+    
+    // Single number
+    const num = parseInt(field);
+    return !isNaN(num) && num >= min && num <= max;
   };
 
   useEffect(() => {
@@ -63,7 +138,7 @@ const Index = () => {
 
     try {
       if (!validateCronExpression(unixCron)) {
-        throw new Error("Invalid cron expression format");
+        throw new Error("Invalid cron expression format. Please check field values and ranges.");
       }
       
       const converted = convertCronToEventBridge(unixCron);
@@ -94,10 +169,46 @@ const Index = () => {
   };
 
   const examples = [
-    { unix: "0 9 * * 1", description: "Every Monday at 9:00 AM", eventbridge: "0 9 * * 2 *" },
-    { unix: "*/15 * * * *", description: "Every 15 minutes", eventbridge: "*/15 * * * * *" },
-    { unix: "0 0 1 * *", description: "First day of every month", eventbridge: "0 0 1 * * *" },
-    { unix: "30 14 * * 0", description: "Every Sunday at 2:30 PM", eventbridge: "30 14 * * 7 *" },
+    { 
+      unix: "0 9 * * 1", 
+      description: "Every Monday at 9:00 AM", 
+      eventbridge: "0 9 * * 2 *" 
+    },
+    { 
+      unix: "*/15 * * * *", 
+      description: "Every 15 minutes", 
+      eventbridge: "*/15 * * * ? *" 
+    },
+    { 
+      unix: "0 0 1 * *", 
+      description: "First day of every month at midnight", 
+      eventbridge: "0 0 1 * ? *" 
+    },
+    { 
+      unix: "30 14 * * 0", 
+      description: "Every Sunday at 2:30 PM", 
+      eventbridge: "30 14 * * 7 *" 
+    },
+    { 
+      unix: "0 10 * * 1-5", 
+      description: "Weekdays at 10:00 AM", 
+      eventbridge: "0 10 * * 2-6 *" 
+    },
+    { 
+      unix: "0 0 */2 * *", 
+      description: "Every 2 days at midnight", 
+      eventbridge: "0 0 */2 * ? *" 
+    },
+    { 
+      unix: "15 2 1 */3 *", 
+      description: "First day of every 3rd month at 2:15 AM", 
+      eventbridge: "15 2 1 */3 ? *" 
+    },
+    { 
+      unix: "0 8 * * 1,3,5", 
+      description: "Monday, Wednesday, Friday at 8:00 AM", 
+      eventbridge: "0 8 * * 2,4,6 *" 
+    }
   ];
 
   return (
@@ -227,24 +338,38 @@ const Index = () => {
           <CardHeader>
             <CardTitle className="text-white">Key Differences</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-6">
             <div className="grid md:grid-cols-2 gap-6">
               <div className="space-y-3">
                 <h3 className="text-lg font-semibold text-purple-300">Unix Cron</h3>
                 <ul className="space-y-2 text-slate-300">
-                  <li>• 5 fields: minute hour day month day-of-week</li>
+                  <li>• 5 fields: minute hour day-of-month month day-of-week</li>
                   <li>• Sunday = 0, Monday = 1, ..., Saturday = 6</li>
                   <li>• No year field</li>
+                  <li>• Uses system's local timezone</li>
+                  <li>• Allows '*' in all fields</li>
                 </ul>
               </div>
               <div className="space-y-3">
                 <h3 className="text-lg font-semibold text-pink-300">EventBridge Cron</h3>
                 <ul className="space-y-2 text-slate-300">
-                  <li>• 6 fields: minute hour day month day-of-week year</li>
+                  <li>• 6 fields: minute hour day-of-month month day-of-week year</li>
                   <li>• Sunday = 7, Monday = 1, ..., Saturday = 6</li>
                   <li>• Year field required (use * for any year)</li>
+                  <li>• Always runs in UTC timezone</li>
+                  <li>• Uses '?' for "no specific value" in day fields</li>
                 </ul>
               </div>
+            </div>
+            
+            <div className="mt-6 p-4 bg-slate-700/30 rounded-lg">
+              <h4 className="text-md font-semibold text-yellow-300 mb-2">Important Notes</h4>
+              <ul className="space-y-1 text-slate-300 text-sm">
+                <li>• EventBridge requires '?' in either day-of-month OR day-of-week when the other is specified</li>
+                <li>• Day-of-week conversion: Unix 0→7, 1→2, 2→3, 3→4, 4→5, 5→6, 6→7</li>
+                <li>• EventBridge schedules are always in UTC - adjust your times accordingly</li>
+                <li>• The converter automatically handles mutual exclusivity rules</li>
+              </ul>
             </div>
           </CardContent>
         </Card>
